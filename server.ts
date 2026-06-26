@@ -214,6 +214,82 @@ Do not include any markdown backticks or extra text outside the JSON block.`;
   }
 });
 
+app.post("/api/ai-action", async (req, res) => {
+  try {
+    const { action, text, tone, targetLanguage, additionalContext, templateTitle, fields } = req.body;
+    
+    let systemInstruction = "";
+    let userPrompt = "";
+
+    if (action === "template") {
+      systemInstruction = "You are an expert AI Email Writer. Generate a complete, polished email from the structured template fields provided.";
+      userPrompt = `Template Title: ${templateTitle || "Custom Template"}
+Fields:
+${JSON.stringify(fields, null, 2)}
+Tone: ${tone || "Professional"}
+Target Language: ${targetLanguage || "English"}
+Additional Instructions: ${additionalContext || "None"}
+
+Please output:
+1. Subject line.
+2. Complete formatted HTML email body (using <p>, <br>, <strong>, etc.).
+3. Core intent of the email.
+4. Key information highlighted.
+5. Next steps or call to action.`;
+    } else {
+      // General rewrite/improve/shorten/expand/etc.
+      systemInstruction = "You are an expert AI Email Assistant. You must perform the requested quick action on the given email or rough text.";
+      userPrompt = `Action to perform: ${action}
+Original Text: "${text || ""}"
+Tone: ${tone || "Professional"}
+Target Language: ${targetLanguage || "English"}
+Additional Instructions / Context: ${additionalContext || "None"}
+
+Actions can be:
+- "improve": Enhance overall writing quality, flow, and clarity.
+- "rewrite": Rewrite the text entirely keeping the same core message.
+- "shorten": Make the email more concise and to the point.
+- "expand": Add professional detail and expand on the points mentioned.
+- "grammar": Correct spelling, punctuation, and grammatical mistakes while retaining content.
+- "subject": Create a highly compelling, relevant subject line for the email.
+- "tone": Rewrite the email specifically adjusting the tone to "${tone}".
+- "compose": Convert rough notes or a brief description into a fully-realized email.
+
+Please return a fully generated/modified email draft including subject and body.`;
+    }
+
+    const prompt = `${systemInstruction}
+
+${userPrompt}
+
+Return your response in a strict JSON format matching this schema:
+{
+  "subject": "The email subject line",
+  "body": "The email body in HTML format (using <p>, <br>, etc.)",
+  "intent": "Brief identified intent or summary of change",
+  "keyInfo": ["key details extracted or highlights of the update"],
+  "callToAction": "Brief suggested follow-up action or next steps"
+}
+
+Do not include any markdown formatting or text outside of the JSON block.`;
+
+    const response = await generateContentWithFallback({
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+      }
+    });
+
+    const resultText = response.text || "";
+    const resultJson = parseJsonSafe(resultText);
+
+    res.json(resultJson);
+  } catch (error: any) {
+    console.error("AI action error:", error);
+    res.status(500).json({ error: error.message || "Failed to execute AI action." });
+  }
+});
+
 app.post("/api/gmail/create-draft", async (req, res) => {
   try {
     let token = req.body.accessToken;

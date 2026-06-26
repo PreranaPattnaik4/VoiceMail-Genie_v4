@@ -51,3 +51,26 @@ export interface EmailTemplate {
   promptHint: string;
   exampleText: string;
 }
+
+export interface SavedDraft {
+  id: string;
+  subject: string;
+  body: string;
+  category: string;
+  savedAt: string;
+  isFavorite: boolean;
+}
+
+export interface TemplateScenario {
+  id: string;
+  category: string;
+  title: string;
+  description: string;
+  fields: {
+    key: string;
+    label: string;
+    placeholder: string;
+    type: 'text' | 'textarea';
+  }[];
+}
+
