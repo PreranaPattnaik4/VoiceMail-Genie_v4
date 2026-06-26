@@ -27,7 +27,12 @@ import {
   LifeBuoy,
   Loader2,
   Trash2,
-  FileAudio
+  FileAudio,
+  BookOpen,
+  X,
+  Cpu,
+  Layers,
+  Heart
 } from "lucide-react";
 import { initAuth, googleSignIn, logout } from "./firebase-auth";
 import { User as FirebaseUser } from "firebase/auth";
@@ -35,6 +40,9 @@ import { SUPPORTED_LANGUAGES, AVAILABLE_TONES, EMAIL_TEMPLATES } from "./data";
 import { EmailGenerationResponse, TranscriptionResponse } from "./types";
 
 export default function App() {
+  // App Guide / Sidebar state
+  const [isSidebarOpen, setIsSidebarOpen] = useState(typeof window !== "undefined" ? window.innerWidth > 1024 : true);
+
   // Authentication state
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -478,6 +486,20 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-4 md:gap-6">
+          {/* App Guide Toggle */}
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer transition-all ${
+              isSidebarOpen 
+                ? 'bg-indigo-50 text-indigo-700 border-indigo-200 shadow-xs' 
+                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+            }`}
+            title="Toggle Info Sidebar"
+          >
+            <BookOpen className="w-4 h-4" />
+            <span>App Guide</span>
+          </button>
+
           {/* Active Status Badge */}
           <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 text-xs font-semibold rounded-full border border-green-100">
             <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
@@ -532,8 +554,150 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Main Bento Grid Container */}
-      <main className="flex-1 p-4 md:p-6 lg:p-8 max-w-[1440px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 lg:grid-rows-6 gap-4">
+      {/* App Body Wrapper with Sidebar & Bento Grid */}
+      <div className="flex-1 flex flex-col lg:flex-row w-full max-w-[1600px] mx-auto overflow-hidden">
+        {/* App Guide Sidebar */}
+        <AnimatePresence>
+          {isSidebarOpen && (
+            <motion.aside
+              initial={{ opacity: 0, width: 0 }}
+              animate={{ opacity: 1, width: "20rem" }}
+              exit={{ opacity: 0, width: 0 }}
+              transition={{ duration: 0.2 }}
+              className="w-full lg:w-80 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 shrink-0 flex flex-col justify-between overflow-y-auto max-h-[calc(100vh-4rem)] relative z-20"
+            >
+              <div className="p-6 space-y-6">
+                {/* Branding Block */}
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h2 className="text-lg font-extrabold tracking-tight text-slate-900 flex items-center gap-1.5">
+                      🎙️ VoiceMail Genie
+                    </h2>
+                    <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mt-1">
+                      AI-Powered Voice-to-Email Assistant
+                    </p>
+                  </div>
+                  <button 
+                    onClick={() => setIsSidebarOpen(false)}
+                    className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* About section */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
+                    <BookOpen className="w-3.5 h-3.5 text-indigo-500" />
+                    <span>About</span>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    VoiceMail Genie helps users convert voice recordings into context-aware email drafts. Simply speak, upload audio, or provide key points, and the AI generates a well-structured email tailored to your preferred tone and communication style.
+                  </p>
+                </div>
+
+                {/* Key Features section */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
+                    <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                    <span>Key Features</span>
+                  </div>
+                  <ul className="space-y-2">
+                    {[
+                      { icon: "🎤", text: "Voice Recording" },
+                      { icon: "📁", text: "Audio File Upload" },
+                      { icon: "📝", text: "Real-Time Speech Transcription" },
+                      { icon: "🤖", text: "AI-Powered Email Generation" },
+                      { icon: "🎭", text: "Multiple Writing Tones" },
+                      { icon: "🌍", text: "Multi-Language Support" },
+                      { icon: "📧", text: "Professional Email Draft Creation" },
+                      { icon: "⚡", text: "Fast & Accurate Processing" },
+                      { icon: "🎯", text: "Intent Detection & Context Understanding" }
+                    ].map((feat, index) => (
+                      <li key={index} className="flex items-start gap-2 text-[11px] text-slate-600">
+                        <span className="shrink-0 text-xs">{feat.icon}</span>
+                        <span className="font-semibold">{feat.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* Workflow section */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
+                    <Cpu className="w-3.5 h-3.5 text-indigo-500" />
+                    <span>Workflow</span>
+                  </div>
+                  
+                  {/* Highly polished visual workflow blocks */}
+                  <div className="relative pl-3.5 space-y-3 before:absolute before:left-1 before:top-1.5 before:bottom-1.5 before:w-[1px] before:bg-indigo-100">
+                    {[
+                      { num: "1", label: "Record or Upload Audio", desc: "Speak directly or drop any audio file" },
+                      { num: "2", label: "Speech-to-Text Transcription", desc: "Instant Whisper V3 word extraction" },
+                      { num: "3", label: "AI Intent & Context Analysis", desc: "Identify key outcomes & call-to-actions" },
+                      { num: "4", label: "Smart Email Generation", desc: "Polished drafted prose ready for edit" },
+                      { num: "5", label: "Review & Send", desc: "Directly compose & save to Gmail Drafts" }
+                    ].map((step, idx) => (
+                      <div key={idx} className="relative space-y-0.5">
+                        <div className="absolute -left-[18px] top-0.5 w-2 h-2 rounded-full bg-indigo-600 ring-4 ring-white flex items-center justify-center"></div>
+                        <h4 className="text-[10px] font-extrabold text-slate-800 leading-none">{step.label}</h4>
+                        <p className="text-[9px] text-slate-400 leading-tight">{step.desc}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Powered By section */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
+                    <span>Powered By</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {[
+                      "Gemini AI",
+                      "Whisper Speech Recognition",
+                      "React",
+                      "TypeScript",
+                      "Tailwind CSS",
+                      "Firebase",
+                      "Google AI Studio"
+                    ].map((tech, idx) => (
+                      <span 
+                        key={idx} 
+                        className="px-1.5 py-0.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 transition-colors border border-slate-200/60 rounded text-[9px] font-bold text-slate-600"
+                      >
+                        {tech}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sidebar Footer with Hackathon Attribution */}
+              <div className="p-5 bg-slate-50 border-t border-slate-100 space-y-2">
+                <div className="flex items-start gap-1.5">
+                  <span className="text-xs shrink-0">🏆</span>
+                  <div>
+                    <h4 className="text-[10px] font-bold text-slate-800 leading-tight">
+                      Built for "Build with AI: Code for Communities" Hackathon
+                    </h4>
+                    <p className="text-[9px] text-slate-400 leading-relaxed mt-0.5">
+                      Creating accessible, AI-powered productivity solutions that simplify communication and empower communities through technology.
+                    </p>
+                  </div>
+                </div>
+                <div className="pt-1.5 border-t border-slate-200/60 text-[9px] text-slate-400 font-medium flex items-center gap-1">
+                  <Heart className="w-2.5 h-2.5 text-indigo-500 fill-indigo-500 animate-pulse" />
+                  <span>Gemini AI • Whisper • Firebase</span>
+                </div>
+              </div>
+            </motion.aside>
+          )}
+        </AnimatePresence>
+
+        {/* Main Bento Grid Container */}
+        <main className="flex-1 p-4 md:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 lg:grid-rows-6 gap-4 overflow-y-auto max-h-[calc(100vh-4rem)]">
         
         {/* CARD 1: Voice Control Card (3 cols, 2 rows) */}
         <section className="lg:col-span-3 lg:row-span-2 bg-white rounded-2xl border border-slate-200 shadow-xs p-5 flex flex-col justify-between relative overflow-hidden">
@@ -1071,6 +1235,8 @@ export default function App() {
         </section>
 
       </main>
+
+      </div>
 
       {/* Footer Info bar */}
       <footer className="border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-400">
