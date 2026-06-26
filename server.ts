@@ -174,10 +174,17 @@ Do not include any markdown backticks or extra text outside the JSON block.`;
 
 app.post("/api/gmail/create-draft", async (req, res) => {
   try {
-    const { accessToken, to, subject, body } = req.body;
-    if (!accessToken) {
+    let token = req.body.accessToken;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.substring(7);
+    }
+
+    if (!token) {
       return res.status(401).json({ error: "Unauthorized: Missing Google OAuth access token" });
     }
+
+    const { to, subject, body } = req.body;
 
     const emailParts = [
       `To: ${to || ""}`,
@@ -195,7 +202,7 @@ app.post("/api/gmail/create-draft", async (req, res) => {
     const gmailRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${accessToken}`,
+        "Authorization": `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({

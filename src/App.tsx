@@ -34,7 +34,7 @@ import {
   Layers,
   Heart
 } from "lucide-react";
-import { initAuth, googleSignIn, logout } from "./firebase-auth";
+import { initAuth, googleSignIn, logout, getTokenStatus, isTokenExpired } from "./firebase-auth";
 import { User as FirebaseUser } from "firebase/auth";
 import { SUPPORTED_LANGUAGES, AVAILABLE_TONES, EMAIL_TEMPLATES } from "./data";
 import { EmailGenerationResponse, TranscriptionResponse } from "./types";
@@ -42,11 +42,16 @@ import { EmailGenerationResponse, TranscriptionResponse } from "./types";
 export default function App() {
   // App Guide / Sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(typeof window !== "undefined" ? window.innerWidth > 1024 : true);
+  const [isAboutExpanded, setIsAboutExpanded] = useState(false);
+  const [isFeaturesExpanded, setIsFeaturesExpanded] = useState(false);
+  const [isWorkflowExpanded, setIsWorkflowExpanded] = useState(false);
+  const [isPoweredByExpanded, setIsPoweredByExpanded] = useState(false);
 
   // Authentication state
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(true);
+  const [authStatus, setAuthStatus] = useState<'connected' | 'expired' | 'disconnected'>('disconnected');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // Audio Capture & Upload State
@@ -89,19 +94,41 @@ export default function App() {
 
   // Initialize Firebase Auth
   useEffect(() => {
+    const s = getTokenStatus();
+    setAuthStatus(s.status);
+    setNeedsAuth(s.status !== 'connected');
+
     const unsubscribe = initAuth(
       (currentUser, token) => {
         setUser(currentUser);
         setAccessToken(token);
-        setNeedsAuth(false);
+        const currentS = getTokenStatus();
+        setAuthStatus(currentS.status);
+        setNeedsAuth(currentS.status !== 'connected');
       },
-      () => {
+      (failStatus) => {
         setUser(null);
         setAccessToken(null);
+        setAuthStatus(failStatus || 'disconnected');
         setNeedsAuth(true);
       }
     );
     return () => unsubscribe();
+  }, []);
+
+  // Periodically check if token expired
+  useEffect(() => {
+    const checkExpiration = () => {
+      const s = getTokenStatus();
+      setAuthStatus(s.status);
+      setNeedsAuth(s.status !== 'connected');
+    };
+    const interval = setInterval(checkExpiration, 10000); // Check every 10 seconds
+    window.addEventListener("focus", checkExpiration); // Check when user switches back to tab
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", checkExpiration);
+    };
   }, []);
 
   // Timer for audio recording duration
@@ -122,15 +149,26 @@ export default function App() {
 
   const handleLogin = async () => {
     setIsLoggingIn(true);
+    setDraftStatus('idle');
     try {
       const result = await googleSignIn();
       if (result) {
         setUser(result.user);
         setAccessToken(result.accessToken);
+        setAuthStatus('connected');
         setNeedsAuth(false);
+        // Show success message briefly
+        setDraftStatus('success');
+        setDraftStatusMessage("Gmail connected successfully");
+        setTimeout(() => {
+          setDraftStatus('idle');
+          setDraftStatusMessage("");
+        }, 4000);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Authentication failed:", err);
+      setDraftStatus('error');
+      setDraftStatusMessage(err.message || "Authentication failed. Reconnect Gmail.");
     } finally {
       setIsLoggingIn(false);
     }
@@ -141,7 +179,10 @@ export default function App() {
       await logout();
       setUser(null);
       setAccessToken(null);
+      setAuthStatus('disconnected');
       setNeedsAuth(true);
+      setDraftStatus('idle');
+      setDraftStatusMessage("");
     } catch (err) {
       console.error("Logout failed:", err);
     }
@@ -398,8 +439,47 @@ export default function App() {
 
   // Save to Gmail Drafts Flow
   const saveToGmailDraft = async () => {
-    if (!accessToken) {
-      alert("Please connect your Google Account first to save drafts to Gmail.");
+    const currentStatus = getTokenStatus();
+    if (currentStatus.status === 'disconnected') {
+      setDraftStatus('error');
+      setDraftStatusMessage("Gmail disconnected. Please connect Gmail first.");
+      setNeedsAuth(true);
+      setAuthStatus('disconnected');
+      return;
+    }
+
+    let activeToken = accessToken;
+    if (currentStatus.status === 'expired' || isTokenExpired()) {
+      console.log("Token is expired. Attempting automatic refresh...");
+      try {
+        setDraftStatus('idle');
+        setDraftStatusMessage("Refreshing Gmail authentication...");
+        const result = await googleSignIn();
+        if (result) {
+          setUser(result.user);
+          setAccessToken(result.accessToken);
+          activeToken = result.accessToken;
+          setAuthStatus('connected');
+          setNeedsAuth(false);
+        } else {
+          throw new Error("Could not automatically refresh token.");
+        }
+      } catch (err: any) {
+        console.error("Auto refresh failed, forcing re-authentication:", err);
+        setDraftStatus('error');
+        setDraftStatusMessage("Authentication expired. Please click Reconnect Gmail.");
+        setNeedsAuth(true);
+        setAuthStatus('expired');
+        setAccessToken(null);
+        return;
+      }
+    }
+
+    if (!activeToken) {
+      setDraftStatus('error');
+      setDraftStatusMessage("Gmail disconnected. Please connect Gmail.");
+      setNeedsAuth(true);
+      setAuthStatus('disconnected');
       return;
     }
 
@@ -409,9 +489,12 @@ export default function App() {
     try {
       const response = await fetch("/api/gmail/create-draft", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${activeToken}`
+        },
         body: JSON.stringify({
-          accessToken,
+          accessToken: activeToken,
           to: recipientEmail,
           subject: manuallyEditedSubject,
           body: manuallyEditedBody
@@ -420,6 +503,12 @@ export default function App() {
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
+        if (response.status === 401 || errData.error?.includes("invalid credentials") || errData.error?.includes("401") || errData.error?.includes("Unauthorized")) {
+          setAccessToken(null);
+          setAuthStatus('expired');
+          setNeedsAuth(true);
+          throw new Error("Authentication expired. Please click Reconnect Gmail.");
+        }
         throw new Error(errData.error || "Gmail API draft saving failed");
       }
 
@@ -586,108 +675,168 @@ export default function App() {
                 </div>
 
                 {/* About section */}
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
-                    <BookOpen className="w-3.5 h-3.5 text-indigo-500" />
-                    <span>About</span>
-                  </div>
-                  <p className="text-xs text-slate-600 leading-relaxed">
-                    VoiceMail Genie helps users convert voice recordings into context-aware email drafts. Simply speak, upload audio, or provide key points, and the AI generates a well-structured email tailored to your preferred tone and communication style.
-                  </p>
+                <div className="space-y-1.5 border-b border-slate-100 pb-4">
+                  <button
+                    onClick={() => setIsAboutExpanded(!isAboutExpanded)}
+                    className="flex items-center justify-between w-full text-left font-extrabold cursor-pointer group py-1"
+                  >
+                    <div className="flex items-center gap-1.5 text-slate-500 text-[10px] uppercase tracking-widest">
+                      <BookOpen className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>About</span>
+                    </div>
+                    <ChevronRight 
+                      className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
+                        isAboutExpanded ? "rotate-90" : ""
+                      }`} 
+                    />
+                  </button>
+                  
+                  <motion.div
+                    initial={false}
+                    animate={{ height: isAboutExpanded ? "auto" : 0, opacity: isAboutExpanded ? 1 : 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <p className="text-xs text-slate-600 leading-relaxed pt-1">
+                      VoiceMail Genie helps users convert voice recordings into context-aware email drafts. Simply speak, upload audio, or provide key points, and the AI generates a well-structured email tailored to your preferred tone and communication style.
+                    </p>
+                  </motion.div>
                 </div>
 
                 {/* Key Features section */}
-                <div className="space-y-2.5">
-                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
-                    <Layers className="w-3.5 h-3.5 text-indigo-500" />
-                    <span>Key Features</span>
-                  </div>
-                  <ul className="space-y-2">
-                    {[
-                      { icon: "🎤", text: "Voice Recording" },
-                      { icon: "📁", text: "Audio File Upload" },
-                      { icon: "📝", text: "Real-Time Speech Transcription" },
-                      { icon: "🤖", text: "AI-Powered Email Generation" },
-                      { icon: "🎭", text: "Multiple Writing Tones" },
-                      { icon: "🌍", text: "Multi-Language Support" },
-                      { icon: "📧", text: "Professional Email Draft Creation" },
-                      { icon: "⚡", text: "Fast & Accurate Processing" },
-                      { icon: "🎯", text: "Intent Detection & Context Understanding" }
-                    ].map((feat, index) => (
-                      <li key={index} className="flex items-start gap-2 text-[11px] text-slate-600">
-                        <span className="shrink-0 text-xs">{feat.icon}</span>
-                        <span className="font-semibold">{feat.text}</span>
-                      </li>
-                    ))}
-                  </ul>
+                <div className="space-y-2.5 border-b border-slate-100 pb-4">
+                  <button
+                    onClick={() => setIsFeaturesExpanded(!isFeaturesExpanded)}
+                    className="flex items-center justify-between w-full text-left font-extrabold cursor-pointer group py-1"
+                  >
+                    <div className="flex items-center gap-1.5 text-slate-500 text-[10px] uppercase tracking-widest">
+                      <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Key Features</span>
+                    </div>
+                    <ChevronRight 
+                      className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
+                        isFeaturesExpanded ? "rotate-90" : ""
+                      }`} 
+                    />
+                  </button>
+
+                  <motion.div
+                    initial={false}
+                    animate={{ height: isFeaturesExpanded ? "auto" : 0, opacity: isFeaturesExpanded ? 1 : 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <ul className="space-y-2 pt-1">
+                      {[
+                        { icon: "🎤", text: "Voice Recording" },
+                        { icon: "📁", text: "Audio File Upload" },
+                        { icon: "📝", text: "Real-Time Speech Transcription" },
+                        { icon: "🤖", text: "AI-Powered Email Generation" },
+                        { icon: "🎭", text: "Multiple Writing Tones" },
+                        { icon: "🌍", text: "Multi-Language Support" },
+                        { icon: "📧", text: "Professional Email Draft Creation" },
+                        { icon: "⚡", text: "Fast & Accurate Processing" },
+                        { icon: "🎯", text: "Intent Detection & Context Understanding" }
+                      ].map((feat, index) => (
+                        <li key={index} className="flex items-start gap-2 text-[11px] text-slate-600">
+                          <span className="shrink-0 text-xs">{feat.icon}</span>
+                          <span className="font-semibold">{feat.text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </motion.div>
                 </div>
 
                 {/* Workflow section */}
-                <div className="space-y-2.5">
-                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
-                    <Cpu className="w-3.5 h-3.5 text-indigo-500" />
-                    <span>Workflow</span>
-                  </div>
-                  
-                  {/* Highly polished visual workflow blocks */}
-                  <div className="relative pl-3.5 space-y-3 before:absolute before:left-1 before:top-1.5 before:bottom-1.5 before:w-[1px] before:bg-indigo-100">
-                    {[
-                      { num: "1", label: "Record or Upload Audio", desc: "Speak directly or drop any audio file" },
-                      { num: "2", label: "Speech-to-Text Transcription", desc: "Instant Whisper V3 word extraction" },
-                      { num: "3", label: "AI Intent & Context Analysis", desc: "Identify key outcomes & call-to-actions" },
-                      { num: "4", label: "Smart Email Generation", desc: "Polished drafted prose ready for edit" },
-                      { num: "5", label: "Review & Send", desc: "Directly compose & save to Gmail Drafts" }
-                    ].map((step, idx) => (
-                      <div key={idx} className="relative space-y-0.5">
-                        <div className="absolute -left-[18px] top-0.5 w-2 h-2 rounded-full bg-indigo-600 ring-4 ring-white flex items-center justify-center"></div>
-                        <h4 className="text-[10px] font-extrabold text-slate-800 leading-none">{step.label}</h4>
-                        <p className="text-[9px] text-slate-400 leading-tight">{step.desc}</p>
-                      </div>
-                    ))}
-                  </div>
+                <div className="space-y-2.5 border-b border-slate-100 pb-4">
+                  <button
+                    onClick={() => setIsWorkflowExpanded(!isWorkflowExpanded)}
+                    className="flex items-center justify-between w-full text-left font-extrabold cursor-pointer group py-1"
+                  >
+                    <div className="flex items-center gap-1.5 text-slate-500 text-[10px] uppercase tracking-widest">
+                      <Cpu className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Workflow</span>
+                    </div>
+                    <ChevronRight 
+                      className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
+                        isWorkflowExpanded ? "rotate-90" : ""
+                      }`} 
+                    />
+                  </button>
+
+                  <motion.div
+                    initial={false}
+                    animate={{ height: isWorkflowExpanded ? "auto" : 0, opacity: isWorkflowExpanded ? 1 : 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    {/* Highly polished visual workflow blocks */}
+                    <div className="relative pl-3.5 space-y-3 before:absolute before:left-1 before:top-2 before:bottom-2 before:w-[1px] before:bg-indigo-100 pt-2">
+                      {[
+                        { num: "1", label: "Record or Upload Audio", desc: "Speak directly or drop any audio file" },
+                        { num: "2", label: "Speech-to-Text Transcription", desc: "Instant Whisper V3 word extraction" },
+                        { num: "3", label: "AI Intent & Context Analysis", desc: "Identify key outcomes & call-to-actions" },
+                        { num: "4", label: "Smart Email Generation", desc: "Polished drafted prose ready for edit" },
+                        { num: "5", label: "Review & Send", desc: "Directly compose & save to Gmail Drafts" }
+                      ].map((step, idx) => (
+                        <div key={idx} className="relative space-y-0.5">
+                          <div className="absolute -left-[18px] top-0.5 w-2 h-2 rounded-full bg-indigo-600 ring-4 ring-white flex items-center justify-center"></div>
+                          <h4 className="text-[10px] font-extrabold text-slate-800 leading-none">{step.label}</h4>
+                          <p className="text-[9px] text-slate-400 leading-tight">{step.desc}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
                 </div>
 
                 {/* Powered By section */}
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1 text-slate-400 text-[10px] uppercase font-extrabold tracking-widest">
-                    <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
-                    <span>Powered By</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {[
-                      "Gemini AI",
-                      "Whisper Speech Recognition",
-                      "React",
-                      "TypeScript",
-                      "Tailwind CSS",
-                      "Firebase",
-                      "Google AI Studio"
-                    ].map((tech, idx) => (
-                      <span 
-                        key={idx} 
-                        className="px-1.5 py-0.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 transition-colors border border-slate-200/60 rounded text-[9px] font-bold text-slate-600"
-                      >
-                        {tech}
-                      </span>
-                    ))}
-                  </div>
+                  <button
+                    onClick={() => setIsPoweredByExpanded(!isPoweredByExpanded)}
+                    className="flex items-center justify-between w-full text-left font-extrabold cursor-pointer group py-1"
+                  >
+                    <div className="flex items-center gap-1.5 text-slate-500 text-[10px] uppercase tracking-widest">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
+                      <span>Powered By</span>
+                    </div>
+                    <ChevronRight 
+                      className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ${
+                        isPoweredByExpanded ? "rotate-90" : ""
+                      }`} 
+                    />
+                  </button>
+
+                  <motion.div
+                    initial={false}
+                    animate={{ height: isPoweredByExpanded ? "auto" : 0, opacity: isPoweredByExpanded ? 1 : 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {[
+                        "Gemini AI",
+                        "Whisper Speech Recognition",
+                        "React",
+                        "TypeScript",
+                        "Tailwind CSS",
+                        "Firebase",
+                        "Google AI Studio"
+                      ].map((tech, idx) => (
+                        <span 
+                          key={idx} 
+                          className="px-1.5 py-0.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 transition-colors border border-slate-200/60 rounded text-[9px] font-bold text-slate-600"
+                        >
+                          {tech}
+                        </span>
+                      ))}
+                    </div>
+                  </motion.div>
                 </div>
               </div>
 
-              {/* Sidebar Footer with Hackathon Attribution */}
-              <div className="p-5 bg-slate-50 border-t border-slate-100 space-y-2">
-                <div className="flex items-start gap-1.5">
-                  <span className="text-xs shrink-0">🏆</span>
-                  <div>
-                    <h4 className="text-[10px] font-bold text-slate-800 leading-tight">
-                      Built for "Build with AI: Code for Communities" Hackathon
-                    </h4>
-                    <p className="text-[9px] text-slate-400 leading-relaxed mt-0.5">
-                      Creating accessible, AI-powered productivity solutions that simplify communication and empower communities through technology.
-                    </p>
-                  </div>
-                </div>
-                <div className="pt-1.5 border-t border-slate-200/60 text-[9px] text-slate-400 font-medium flex items-center gap-1">
+              {/* Sidebar Footer with Attribution */}
+              <div className="p-5 bg-slate-50 border-t border-slate-100">
+                <div className="text-[9px] text-slate-400 font-medium flex items-center justify-center gap-1">
                   <Heart className="w-2.5 h-2.5 text-indigo-500 fill-indigo-500 animate-pulse" />
                   <span>Gemini AI • Whisper • Firebase</span>
                 </div>
@@ -700,7 +849,7 @@ export default function App() {
         <main className="flex-1 p-4 md:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 lg:grid-rows-6 gap-4 overflow-y-auto max-h-[calc(100vh-4rem)]">
         
         {/* CARD 1: Voice Control Card (3 cols, 2 rows) */}
-        <section className="lg:col-span-3 lg:row-span-2 bg-white rounded-2xl border border-slate-200 shadow-xs p-5 flex flex-col justify-between relative overflow-hidden">
+        <section className="lg:col-span-3 lg:row-span-2 lg:col-start-1 lg:row-start-1 bg-white rounded-2xl border border-slate-200 shadow-xs p-5 flex flex-col justify-between relative overflow-hidden">
           <div className="flex justify-between items-start">
             <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400">Voice Input</span>
             <span className={`text-xs font-mono font-bold ${recordingState === 'recording' ? 'text-red-500 animate-pulse' : 'text-indigo-600'}`}>
@@ -835,7 +984,7 @@ export default function App() {
         </section>
 
         {/* CARD 2: Real-time Transcription Workspace (3 cols, 4 rows) */}
-        <section className="lg:col-span-3 lg:row-span-4 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between">
+        <section className="lg:col-span-3 lg:row-span-4 lg:col-start-1 lg:row-start-3 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between">
           <header className="flex justify-between items-center mb-3">
             <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400">Transcription</span>
             <span className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[9px] rounded font-bold uppercase tracking-wider">
@@ -903,18 +1052,18 @@ export default function App() {
           </button>
         </section>
 
-        {/* CARD 3: Tone Selection Card (3 cols, 3 rows) */}
-        <section className="lg:col-span-3 lg:row-span-3 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between">
+        {/* CARD 3: Tone Selection Card (3 cols, 2 rows) */}
+        <section className="lg:col-span-3 lg:row-span-2 lg:col-start-4 lg:row-start-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col justify-between">
           <div>
-            <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400 block mb-3">Select Tone</span>
-            <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
+            <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400 block mb-2">Select Tone</span>
+            <div className="space-y-1 max-h-[85px] overflow-y-auto pr-1 scrollbar-thin">
               {AVAILABLE_TONES.map(tone => {
                 const isSelected = selectedTone === tone.id;
                 return (
                   <div
                     key={tone.id}
                     onClick={() => setSelectedTone(tone.id)}
-                    className={`flex items-center justify-between p-2 rounded-xl border transition-all cursor-pointer ${
+                    className={`flex items-center justify-between p-1.5 rounded-lg border transition-all cursor-pointer ${
                       isSelected
                         ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-bold'
                         : 'bg-slate-50/50 border-transparent hover:bg-slate-100 text-slate-600 font-medium'
@@ -924,23 +1073,23 @@ export default function App() {
                       <span className={isSelected ? 'text-indigo-600' : 'text-slate-400'}>
                         {renderToneIcon(tone.icon)}
                       </span>
-                      <span className="text-xs">{tone.label}</span>
+                      <span className="text-[11px]">{tone.label}</span>
                     </div>
-                    {isSelected && <div className="w-1.5 h-1.5 bg-indigo-600 rounded-full"></div>}
+                    {isSelected && <div className="w-1 h-1 bg-indigo-600 rounded-full"></div>}
                   </div>
                 );
               })}
             </div>
           </div>
 
-          <div className="mt-4 pt-3 border-t border-slate-100 space-y-3">
+          <div className="mt-2 pt-2 border-t border-slate-100 space-y-2">
             {/* Output Language select */}
             <div>
-              <div className="text-[10px] text-slate-400 font-bold mb-1.5 uppercase tracking-wider">Output Language</div>
+              <div className="text-[9px] text-slate-400 font-bold mb-1 uppercase tracking-wider">Output Language</div>
               <select
                 value={targetLanguage}
                 onChange={(e) => setTargetLanguage(e.target.value)}
-                className="w-full text-xs bg-slate-50 border border-slate-200 p-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all font-semibold text-slate-700"
+                className="w-full text-[11px] bg-slate-50 border border-slate-200 p-1.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all font-semibold text-slate-700"
               >
                 {SUPPORTED_LANGUAGES.map(l => (
                   <option key={l.code} value={l.name}>{l.flag} {l.name}</option>
@@ -949,87 +1098,138 @@ export default function App() {
             </div>
 
             {/* Recipients metadata inputs */}
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-1.5">
               <div>
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block mb-1">To Name</span>
+                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">To Name</span>
                 <input
                   type="text"
                   value={recipientName}
                   onChange={(e) => setRecipientName(e.target.value)}
-                  placeholder="e.g. Sarah"
-                  className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-slate-300"
+                  placeholder="Sarah"
+                  className="w-full text-[11px] p-1.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-slate-300"
                 />
               </div>
               <div>
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Extra Context</span>
+                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Extra Context</span>
                 <input
                   type="text"
                   value={additionalContext}
                   onChange={(e) => setAdditionalContext(e.target.value)}
                   placeholder="e.g. postpone"
-                  className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-slate-300"
+                  className="w-full text-[11px] p-1.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-slate-300"
                 />
               </div>
             </div>
           </div>
         </section>
 
-        {/* CARD 4: Efficiency Stats Card (3 cols, 3 rows) - Slate 900 Theme */}
-        <section className="lg:col-span-3 lg:row-span-3 bg-slate-900 rounded-2xl p-5 text-white flex flex-col justify-between shadow-lg relative overflow-hidden">
+        {/* CARD 4: Efficiency Stats Card (3 cols, 4 rows) - Slate 900 Theme */}
+        <section className="lg:col-span-3 lg:row-span-4 lg:col-start-4 lg:row-start-1 bg-slate-900 rounded-2xl p-5 text-white flex flex-col justify-between shadow-lg relative overflow-hidden">
           {/* Ambient Glow effect */}
-          <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
+          <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
           
-          <div>
-            <span className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Efficiency Stats</span>
-            <div className="mt-3 grid grid-cols-2 gap-4">
-              <div>
-                <div className="text-2xl font-bold tracking-tighter text-white font-mono">
-                  {manuallyEditedBody ? `0:${Math.max(12, Math.round(manuallyEditedBody.split(" ").length * 0.45)).toString().padStart(2, '0')}s` : "0:00s"}
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400">Efficiency Insights</span>
+              <span className="px-2 py-0.5 bg-indigo-500/20 text-indigo-300 text-[8px] rounded-full font-extrabold uppercase tracking-widest">Live Metrics</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <span className="text-[10px] text-slate-400 font-bold block uppercase">Saved Time</span>
+                <div className="text-3xl font-extrabold tracking-tight text-white font-mono flex items-baseline gap-0.5">
+                  {manuallyEditedBody ? `0:${Math.max(12, Math.round(manuallyEditedBody.split(" ").length * 0.45)).toString().padStart(2, '0')}` : "0:00"}
+                  <span className="text-xs text-indigo-400 font-sans font-bold">sec</span>
                 </div>
-                <div className="text-[10px] text-slate-400">Saved time</div>
+                <span className="text-[9px] text-slate-500 block leading-tight">drafting acceleration</span>
               </div>
-              <div>
-                <div className="text-2xl font-bold tracking-tighter text-indigo-400 font-mono">
+              <div className="space-y-1">
+                <span className="text-[10px] text-slate-400 font-bold block uppercase">AI Accuracy</span>
+                <div className="text-3xl font-extrabold tracking-tight text-indigo-400 font-mono">
                   {manuallyEditedBody ? "98%" : "100%"}
                 </div>
-                <div className="text-[10px] text-slate-400">AI Accuracy</div>
+                <span className="text-[9px] text-slate-500 block leading-tight">context precision</span>
+              </div>
+            </div>
+
+            {/* Premium Visual: Comparison Bar Graph */}
+            <div className="bg-slate-800/40 border border-slate-800 rounded-xl p-3 space-y-2.5">
+              <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                <span>SPEED BENCHMARK</span>
+                <span className="text-indigo-400">20x FASTER</span>
+              </div>
+              
+              <div className="space-y-2">
+                {/* Manual Method */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[9px] text-slate-400">
+                    <span>Manual Typing</span>
+                    <span className="font-mono">~300s</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-rose-500/80 rounded-full w-[85%]"></div>
+                  </div>
+                </div>
+
+                {/* VoiceMail Genie Method */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[9px] text-indigo-300 font-bold">
+                    <span>VoiceMail Genie</span>
+                    <span className="font-mono">~15s</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: "8%" }}
+                      transition={{ duration: 1 }}
+                      className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 rounded-full"
+                    ></motion.div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="bg-white/10 rounded-xl p-3.5 space-y-2 mt-4">
-            <div className="flex justify-between items-center">
-              <span className="text-[10px] font-bold text-slate-400 uppercase">INTENT</span>
-              <span className="text-[10px] font-bold text-indigo-400 uppercase font-mono tracking-wider">
-                {generatedEmail?.intent || "AWAITING INPUT"}
-              </span>
-            </div>
-            
-            <div className="h-1.5 bg-white/20 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-indigo-500 transition-all duration-500" 
-                style={{ width: generatedEmail ? '85%' : '0%' }}
-              ></div>
-            </div>
-
-            {generatedEmail?.keyInfo && generatedEmail.keyInfo.length > 0 && (
-              <div className="pt-2 border-t border-white/5 space-y-1">
-                <span className="text-[8px] font-bold text-slate-500 uppercase block tracking-wider">Extracted details:</span>
-                <div className="max-h-[55px] overflow-y-auto space-y-1 pr-1">
-                  {generatedEmail.keyInfo.slice(0, 2).map((info, idx) => (
-                    <p key={idx} className="text-[10px] text-slate-300 truncate flex items-center gap-1.5">
-                      <span className="w-1 h-1 bg-emerald-400 rounded-full flex-shrink-0"></span>
-                      <span>{info}</span>
-                    </p>
-                  ))}
-                </div>
+          <div className="space-y-3 mt-4">
+            {/* Extracted Details & Intent */}
+            <div className="bg-white/5 rounded-xl p-3 space-y-2.5">
+              <div className="flex justify-between items-center">
+                <span className="text-[9px] font-bold text-slate-400 uppercase">DETECTOR INTENT</span>
+                <span className="px-1.5 py-0.5 bg-indigo-500/10 text-[9px] text-indigo-300 font-extrabold uppercase font-mono rounded tracking-wider">
+                  {generatedEmail?.intent || "AWAITING AUDIO"}
+                </span>
               </div>
-            )}
+              
+              <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all duration-500" 
+                  style={{ width: generatedEmail ? '100%' : '0%' }}
+                ></div>
+              </div>
+
+              {generatedEmail?.keyInfo && generatedEmail.keyInfo.length > 0 ? (
+                <div className="pt-1.5 border-t border-white/5 space-y-1.5">
+                  <span className="text-[8px] font-bold text-slate-400 uppercase block tracking-wider">EXTRACTED ENTITIES:</span>
+                  <div className="max-h-[70px] overflow-y-auto space-y-1 pr-1 scrollbar-thin">
+                    {generatedEmail.keyInfo.map((info, idx) => (
+                      <p key={idx} className="text-[10px] text-slate-300 flex items-start gap-1.5">
+                        <span className="w-1 h-1 bg-emerald-400 rounded-full mt-1 flex-shrink-0"></span>
+                        <span className="leading-tight">{info}</span>
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[9px] text-slate-500 text-center py-1 italic">
+                  Key details will appear here upon transcription
+                </div>
+              )}
+            </div>
           </div>
         </section>
 
         {/* CARD 5: Main Email Draft Workspace (6 cols, 6 rows) */}
-        <section className="lg:col-span-6 lg:row-span-6 bg-white rounded-2xl border-2 border-indigo-100 shadow-xl p-5 md:p-6 flex flex-col justify-between">
+        <section className="lg:col-span-6 lg:row-span-6 lg:col-start-7 lg:row-start-1 bg-white rounded-2xl border-2 border-indigo-100 shadow-xl p-5 md:p-6 flex flex-col justify-between">
           
           {generatedEmail ? (
             <div className="flex-1 flex flex-col justify-between h-full space-y-4">
@@ -1098,23 +1298,47 @@ export default function App() {
 
               {/* Account Sync module */}
               <div className="pt-3 border-t border-slate-100">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="h-5 w-5 rounded bg-indigo-50 flex items-center justify-center text-indigo-600">
-                    <Mail className="h-3 w-3" />
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-5 w-5 rounded bg-indigo-50 flex items-center justify-center text-indigo-600">
+                      <Mail className="h-3 w-3" />
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Gmail Draft Sync</span>
                   </div>
-                  <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Gmail Draft Sync</span>
+                  
+                  {/* Status Indicator */}
+                  <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                    authStatus === 'connected' 
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
+                      : authStatus === 'expired'
+                      ? 'bg-amber-50 text-amber-700 border border-amber-100'
+                      : 'bg-slate-50 text-slate-500 border border-slate-200'
+                  }`}>
+                    {authStatus === 'connected' && "Gmail connected successfully"}
+                    {authStatus === 'expired' && "Authentication expired"}
+                    {authStatus === 'disconnected' && "Gmail disconnected"}
+                  </span>
                 </div>
 
-                {needsAuth ? (
-                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2">
-                    <p className="text-[11px] text-slate-500 font-medium">Authorize Gmail to save drafts directly in your folders.</p>
+                {authStatus !== 'connected' ? (
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2 text-left">
+                    <div className="text-left flex-grow">
+                      <p className="text-[11px] text-slate-700 font-bold">
+                        {authStatus === 'expired' ? "Authentication expired" : "Gmail disconnected"}
+                      </p>
+                      <p className="text-[10px] text-slate-500 leading-normal">
+                        {authStatus === 'expired' 
+                          ? "Your authentication session has expired. Please reconnect to refresh." 
+                          : "Authorize Gmail to save drafts directly in your drafts folder."}
+                      </p>
+                    </div>
                     <button
                       onClick={handleLogin}
                       disabled={isLoggingIn}
-                      className="py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-sm"
+                      className="py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm whitespace-nowrap"
                     >
                       {isLoggingIn ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3 text-indigo-200" />}
-                      Connect Gmail
+                      {authStatus === 'expired' ? "Reconnect Gmail" : "Connect Gmail"}
                     </button>
                   </div>
                 ) : (
@@ -1147,6 +1371,19 @@ export default function App() {
                             <span>Save to Gmail Drafts</span>
                           </>
                         )}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-emerald-600 font-medium flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                        Gmail connected successfully
+                      </span>
+                      <button 
+                        onClick={handleLogout}
+                        className="text-slate-400 hover:text-rose-600 font-semibold cursor-pointer"
+                      >
+                        Disconnect Account
                       </button>
                     </div>
 
