@@ -1,0 +1,6 @@
+{
+  "name": "VoiceMail Genie",
+  "description": "AI-Powered Voice-to-Email Generation Platform. Speak or upload audio to generate perfect, multilingual email drafts.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
