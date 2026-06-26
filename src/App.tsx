@@ -1052,11 +1052,11 @@ export default function App() {
           </button>
         </section>
 
-        {/* CARD 3: Tone Selection Card (3 cols, 2 rows) */}
-        <section className="lg:col-span-3 lg:row-span-2 lg:col-start-4 lg:row-start-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col justify-between">
+        {/* CARD 3: Tone Selection Card (2 cols, 6 rows) */}
+        <section className="lg:col-span-2 lg:row-span-6 lg:col-start-4 lg:row-start-1 bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col justify-between">
           <div>
             <span className="text-[10px] uppercase tracking-widest font-bold text-slate-400 block mb-2">Select Tone</span>
-            <div className="space-y-1 max-h-[85px] overflow-y-auto pr-1 scrollbar-thin">
+            <div className="space-y-1 max-h-[260px] overflow-y-auto pr-1 scrollbar-thin">
               {AVAILABLE_TONES.map(tone => {
                 const isSelected = selectedTone === tone.id;
                 return (
@@ -1123,8 +1123,8 @@ export default function App() {
           </div>
         </section>
 
-        {/* CARD 4: Efficiency Stats Card (3 cols, 4 rows) - Slate 900 Theme */}
-        <section className="lg:col-span-3 lg:row-span-4 lg:col-start-4 lg:row-start-1 bg-slate-900 rounded-2xl p-5 text-white flex flex-col justify-between shadow-lg relative overflow-hidden">
+        {/* CARD 4: Efficiency Stats Card (2 cols, 6 rows) - Slate 900 Theme */}
+        <section className="lg:col-span-2 lg:row-span-6 lg:col-start-11 lg:row-start-1 bg-slate-900 rounded-2xl p-5 text-white flex flex-col justify-between shadow-lg relative overflow-hidden">
           {/* Ambient Glow effect */}
           <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
           
@@ -1228,8 +1228,8 @@ export default function App() {
           </div>
         </section>
 
-        {/* CARD 5: Main Email Draft Workspace (6 cols, 6 rows) */}
-        <section className="lg:col-span-6 lg:row-span-6 lg:col-start-7 lg:row-start-1 bg-white rounded-2xl border-2 border-indigo-100 shadow-xl p-5 md:p-6 flex flex-col justify-between">
+        {/* CARD 5: Main Email Draft Workspace (5 cols, 6 rows) */}
+        <section className="lg:col-span-5 lg:row-span-6 lg:col-start-6 lg:row-start-1 bg-white rounded-2xl border-2 border-indigo-100 shadow-xl p-5 md:p-6 flex flex-col justify-between">
           
           {generatedEmail ? (
             <div className="flex-1 flex flex-col justify-between h-full space-y-4">

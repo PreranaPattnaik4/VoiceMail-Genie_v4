@@ -32,6 +32,60 @@ function getGeminiClient(): GoogleGenAI {
   return aiInstance;
 }
 
+async function generateContentWithFallback(params: {
+  contents: any;
+  config?: any;
+}): Promise<any> {
+  const ai = getGeminiClient();
+  // Models to try in order of preference
+  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    // Retry each model up to 2 times
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`Attempting Gemini generation using model: ${model} (attempt ${attempt}/2)`);
+        const response = await ai.models.generateContent({
+          model,
+          contents: params.contents,
+          config: params.config,
+        });
+        return response;
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`Gemini generation failed for ${model} on attempt ${attempt}:`, error.message || error);
+        
+        // Wait briefly (with slight backoff) before retrying/falling back
+        const delay = attempt * 1000;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError || new Error("Failed to generate content with all fallback models.");
+}
+
+function parseJsonSafe(text: string): any {
+  const cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim();
+  try {
+    return JSON.parse(cleanText);
+  } catch (error) {
+    // Try to extract JSON between the first '{' and the last '}'
+    const firstBrace = cleanText.indexOf('{');
+    const lastBrace = cleanText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const jsonCandidate = cleanText.substring(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(jsonCandidate);
+      } catch (nestedError) {
+        console.error("Failed to parse extracted JSON block:", nestedError);
+      }
+    }
+    throw error;
+  }
+}
+
 // API routes FIRST
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
@@ -44,10 +98,7 @@ app.post("/api/transcribe", async (req, res) => {
       return res.status(400).json({ error: "Missing audioBase64 data" });
     }
 
-    const ai = getGeminiClient();
-    
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateContentWithFallback({
       contents: [
         {
           inlineData: {
@@ -65,8 +116,7 @@ app.post("/api/transcribe", async (req, res) => {
     });
 
     const resultText = response.text || "";
-    const jsonStr = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
-    const resultJson = JSON.parse(jsonStr);
+    const resultJson = parseJsonSafe(resultText);
     
     res.json(resultJson);
   } catch (error: any) {
@@ -81,8 +131,6 @@ app.post("/api/generate-email", async (req, res) => {
     if (!transcription) {
       return res.status(400).json({ error: "No transcription provided" });
     }
-
-    const ai = getGeminiClient();
 
     const prompt = `You are an expert Agentic AI Email Assistant. Convert the following spoken voice transcript into a highly polished, professional, structured email draft.
 
@@ -111,8 +159,7 @@ Return your response in a strict JSON format matching this schema:
 
 Do not include any markdown formatting, backticks, or text other than the JSON string. Ensure the JSON is syntactically valid.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateContentWithFallback({
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -120,8 +167,7 @@ Do not include any markdown formatting, backticks, or text other than the JSON s
     });
 
     const resultText = response.text || "";
-    const jsonStr = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
-    const resultJson = JSON.parse(jsonStr);
+    const resultJson = parseJsonSafe(resultText);
 
     res.json(resultJson);
   } catch (error: any) {
@@ -137,8 +183,6 @@ app.post("/api/translate-email", async (req, res) => {
       return res.status(400).json({ error: "Missing subject or body" });
     }
 
-    const ai = getGeminiClient();
-
     const prompt = `Translate the following email subject and HTML body into the target language: "${targetLanguage}".
 Ensure the tone matches: "${tone}". Keep all HTML structure (like <p>, <br>, <strong>) completely intact.
 
@@ -153,8 +197,7 @@ Return your response in a strict JSON format:
 
 Do not include any markdown backticks or extra text outside the JSON block.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateContentWithFallback({
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -162,8 +205,7 @@ Do not include any markdown backticks or extra text outside the JSON block.`;
     });
 
     const resultText = response.text || "";
-    const jsonStr = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
-    const resultJson = JSON.parse(jsonStr);
+    const resultJson = parseJsonSafe(resultText);
 
     res.json(resultJson);
   } catch (error: any) {
